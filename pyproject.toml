@@ -4,12 +4,13 @@ version = "0.1.0"
 description = ""
 authors = ["Tu Nombre <espinosa081205@gmail.com>"]
 
+# Configuración CORRECTA de packages:
 [tool.poetry.packages]
-include = [{ include = "app.py" }] 
+includes = ["**/*.py"]  # Formato array correcto
 
 [tool.poetry.dependencies]
-python = "^3.10"  # Usa 3.8, 3.9 o 3.10 (3.13 puede dar problemas)
-flask = "^2.0.0"  # Ejemplo: añade tus dependencias aquí
+python = "^3.10"  # ¡Cambia esto de 3.13 a 3.10!
+flask = "^2.3.3"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
