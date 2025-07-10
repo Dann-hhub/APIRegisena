@@ -4,10 +4,6 @@ version = "0.1.0"
 description = ""
 authors = ["Tu Nombre <espinosa081205@gmail.com>"]
 
-# Configuración CORRECTA de packages:
-[tool.poetry.packages]
-includes = ["**/*.py"]  # Formato array correcto
-
 [tool.poetry.dependencies]
 python = "^3.10"  # ¡Cambia esto de 3.13 a 3.10!
 flask = "^2.3.3"
