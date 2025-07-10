@@ -2,7 +2,7 @@
 name = "apiregisena"
 version = "0.1.0"
 description = ""
-authors = ["Tu Nombre <tu@email.com>"]
+authors = ["Tu Nombre <espinosa081205@gmail.com>"]
 
 [tool.poetry.dependencies]
 python = "^3.10"  # Usa 3.8, 3.9 o 3.10 (3.13 puede dar problemas)
