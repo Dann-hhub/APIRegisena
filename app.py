@@ -571,37 +571,47 @@ def editar_movimiento(id):
 @app.route('/login', methods=['POST'])
 def login():
     try:
-        # Obtener credenciales del request
-        correo = request.json.get('correo')
-        contrasena = request.json.get('contrasena')
+        # Validación básica
+        if not request.is_json:
+            return jsonify({"success": False, "message": "Se esperaba JSON"}), 400
+            
+        data = request.get_json()
+        correo = data.get('correo')
+        contrasena = data.get('contrasena')
 
         if not correo or not contrasena:
-            return jsonify({'success': False, 'message': 'Correo y contraseña son requeridos'}), 400
+            return jsonify({"success": False, "message": "Correo y contraseña requeridos"}), 400
 
+        # Conexión segura con parámetros
         cursor = conexion.connection.cursor()
-        sql = "SELECT documento, nombre, apellido, rol, estado FROM usuario WHERE correo = %s AND contrasena = %s"
+        sql = """
+        SELECT documento, nombre, apellido, rol, estado 
+        FROM usuario 
+        WHERE correo = %s AND contrasena = %s
+        """
         cursor.execute(sql, (correo, contrasena))
         usuario = cursor.fetchone()
 
-        if usuario:
-            # Verificar si el usuario está activo
-            if usuario[4] == 0:  # Asumiendo que estado 0 es inactivo
-                return jsonify({'success': False, 'message': 'Usuario inactivo'}), 403
+        if not usuario:
+            return jsonify({"success": False, "message": "Credenciales inválidas"}), 401
             
-            # Construir respuesta
-            usuario_data = {
-                'documento': usuario[0],
-                'nombre': usuario[1],
-                'apellido': usuario[2],
-                'rol': usuario[3],
-                'correo': correo
-            }
-            return jsonify({'success': True, 'usuario': usuario_data, 'message': 'Login exitoso'})
-        else:
-            return jsonify({'success': False, 'message': 'Credenciales incorrectas'}), 401
+        if usuario[4] == 0:  # Si estado es inactivo
+            return jsonify({"success": False, "message": "Usuario inactivo"}), 403
 
-    except Exception as ex:
-        return jsonify({'success': False, 'message': 'Error en el servidor'}), 500
+        # Respuesta exitosa
+        return jsonify({
+            "success": True,
+            "usuario": {
+                "documento": usuario[0],
+                "nombre": usuario[1],
+                "apellido": usuario[2],
+                "rol": usuario[3]
+            }
+        })
+
+    except Exception as e:
+        app.logger.error(f"Error en login: {str(e)}")
+        return jsonify({"success": False, "message": "Error interno"}), 500
     
 #----------------------------------------------------------------------------------------------------------------------------------------------------------------
 
