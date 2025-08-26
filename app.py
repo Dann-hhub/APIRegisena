@@ -2,8 +2,14 @@ from flask import Flask, jsonify, request
 from flask_mysqldb import MySQL
 from flask_cors import CORS 
 from config import config
+import random
+import string
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
+
+# Diccionario temporal para almacenar códigos de verificación
+verification_codes = {}
 
 CORS(app)
 conexion = MySQL(app)
@@ -535,12 +541,23 @@ def leer_movimiento(id):
 def crear_movimiento():
     try:
         cursor = conexion.connection.cursor()
-        sql = "INSERT INTO movimiento (id, documentoPersona, serialEquipo, centroFormacion, documentoVigilante, observaciones, tipoIngreso, fechaIngreso, tipoSalida, fechaSalida) VALUES ('{0}', '{1}', '{2}', '{3}', '{4}', '{5}', '{6}', '{7}', '{8}', '{9}')""".format(request.json['id'], request.json['documentoPersona'], request.json['serialEquipo'], request.json['centroFormacion'], request.json['documentoVigilante'], request.json['observaciones'], request.json['tipoIngreso'], request.json['fechaIngreso'], request.json['tipoSalida'], request.json['fechaSalida'])
-        cursor.execute(sql)
-        conexion.connection.commit() #confirma la accion de creación
+        sql = """INSERT INTO movimiento 
+                 (documentoPersona, serialEquipo, centroFormacion, tipoIngreso, fechaIngreso, tipoSalida, fechaSalida) 
+                 VALUES (%s, %s, %s, %s, %s, %s, %s)"""
+        valores = (
+            request.json['documentoPersona'],
+            request.json['serialEquipo'],
+            request.json['centroFormacion'],
+            request.json['tipoIngreso'],
+            request.json['fechaIngreso'],
+            request.json.get('tipoSalida', ''),
+            request.json.get('fechaSalida', '')
+        )
+        cursor.execute(sql, valores)
+        conexion.connection.commit()
         return jsonify({'mensaje': 'Movimiento creado.'})
     except Exception as ex:
-        return jsonify({'mensaje': 'Error!'})
+        return jsonify({'mensaje': f'Error: {str(ex)}'}), 500
     
 #ELIMINAR
 @app.route('/movimiento/<id>', methods=['DELETE'])
@@ -555,40 +572,57 @@ def eliminar_movimiento(id):
         return jsonify({'mensaje': 'Error!'})
 
 #ACTUALIZAR
-@app.route('/movimiento/<id>', methods=['PUT'])
-def editar_movimiento(id):
+@app.route('/movimiento/<int:id>', methods=['PUT'])
+def actualizar_movimiento(id):
     try:
         cursor = conexion.connection.cursor()
-        sql = """UPDATE movimiento SET documentoPersona = '{0}', serialEquipo = '{1}', centroFormacion = '{2}', documentoVigilante = '{3}', observaciones = '{4}', tipoIngreso = '{5}',  fechaIngreso = '{6}', tipoSalida = '{7}', fechaSalida = '{8}' WHERE id = '{9}'""".format(request.json['documentoPersona'], request.json['serialEquipo'], request.json['centroFormacion'], request.json['documentoVigilante'], request.json['observaciones'], request.json['tipoIngreso'], request.json['fechaIngreso'], request.json['tipoSalida'], request.json['fechaSalida'], id)
-        cursor.execute(sql)
+        
+        # Verificar si el movimiento existe
+        cursor.execute("SELECT id FROM movimiento WHERE id = %s", (id,))
+        if not cursor.fetchone():
+            return jsonify({'mensaje': 'Movimiento no encontrado'}), 404
+        
+        data = request.json
+        
+        # Construir la consulta dinámicamente
+        update_fields = []
+        values = []
+        
+        if 'tipoSalida' in data:
+            update_fields.append("tipoSalida = %s")
+            values.append(data['tipoSalida'])
+        
+        if 'fechaSalida' in data:
+            update_fields.append("fechaSalida = %s")
+            values.append(data['fechaSalida'])
+        
+        if not update_fields:
+            return jsonify({'mensaje': 'Nada que actualizar'}), 400
+        
+        values.append(id)  # Para el WHERE
+        
+        sql = f"UPDATE movimiento SET {', '.join(update_fields)} WHERE id = %s"
+        cursor.execute(sql, values)
         conexion.connection.commit()
-        return jsonify({'mensaje': 'Movimiento actualizado correctamente.'})
+        
+        return jsonify({'mensaje': 'Movimiento actualizado correctamente'})
     except Exception as ex:
-        return jsonify({'mensaje': 'Error al actualizar movimiento'}), 500
+        conexion.connection.rollback()
+        return jsonify({'mensaje': f'Error al actualizar movimiento: {str(ex)}'}), 500
     
 #----------------------------------------------------------------------------------------------------------------------------------------------------------------
 # LOGIN
 @app.route('/login', methods=['POST'])
 def login():
     try:
-        # Validación básica
-        if not request.is_json:
-            return jsonify({"success": False, "message": "Se esperaba JSON"}), 400
-            
         data = request.get_json()
-        correo = data.get('correo')
-        contrasena = data.get('contrasena')
+        correo = data['correo']
+        contrasena = data['contrasena']
 
-        if not correo or not contrasena:
-            return jsonify({"success": False, "message": "Correo y contraseña requeridos"}), 400
-
-        # Conexión segura con parámetros
         cursor = conexion.connection.cursor()
-        sql = """
-        SELECT documento, nombre, apellido, rol, estado 
-        FROM usuario 
-        WHERE correo = %s AND contrasena = %s
-        """
+        sql = """SELECT documento, nombre, apellido, rol, estado 
+                 FROM usuario 
+                 WHERE correo = %s AND contrasena = %s"""
         cursor.execute(sql, (correo, contrasena))
         usuario = cursor.fetchone()
 
@@ -598,15 +632,28 @@ def login():
         if usuario[4] == 0:  # Si estado es inactivo
             return jsonify({"success": False, "message": "Usuario inactivo"}), 403
 
-        # Respuesta exitosa
+        # En lugar de devolver los datos, iniciamos verificación
+        # Generar código de 6 dígitos
+        code = ''.join(random.choices(string.digits, k=6))
+        expiration = datetime.now() + timedelta(minutes=15)
+
+        # Guardar código
+        verification_codes[correo] = {
+            'code': code,
+            'expiration': expiration,
+            'attempts': 0,
+            'user_data': {  # Guardamos datos del usuario temporalmente
+                'documento': usuario[0],
+                'nombre': usuario[1],
+                'apellido': usuario[2],
+                'rol': usuario[3]
+            }
+        }
+
         return jsonify({
             "success": True,
-            "usuario": {
-                "documento": usuario[0],
-                "nombre": usuario[1],
-                "apellido": usuario[2],
-                "rol": usuario[3]
-            }
+            "message": "Código de verificación enviado al correo",
+            "email": correo
         })
 
     except Exception as e:
@@ -615,8 +662,8 @@ def login():
     
 #----------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-@app.route('/update-password', methods=['POST'])
-def update_password():
+@app.route('/forgot-password', methods=['POST'])
+def forgot_password():
     try:
         data = request.get_json()
         correo = data['correo']
@@ -630,6 +677,264 @@ def update_password():
         return jsonify({'success': True, 'message': 'Contraseña actualizada correctamente'})
     except Exception as ex:
         return jsonify({'success': False, 'message': 'Error al actualizar contraseña'}), 500
+    
+#----------------------------------------------------------------------------------------------------------------------------------------------------------------
+# CAMBIO DE CONTRASEÑA
+@app.route('/update-password', methods=['POST'])
+def update_password():
+    try:
+        data = request.get_json()
+        documento = data['documento']
+        contrasena_actual = data['contrasenaActual']
+        nueva_contrasena = data['nuevaContrasena']
+
+        cursor = conexion.connection.cursor()
+        
+        # 1. Verificar contraseña actual
+        sql_verificar = """
+        SELECT documento FROM usuario 
+        WHERE documento = %s AND contrasena = %s
+        """
+        cursor.execute(sql_verificar, (documento, contrasena_actual))
+        usuario = cursor.fetchone()
+
+        if not usuario:
+            return jsonify({'success': False, 'message': 'Contraseña actual incorrecta'}), 401
+
+        # 2. Actualizar contraseña
+        sql_actualizar = """
+        UPDATE usuario SET contrasena = %s 
+        WHERE documento = %s
+        """
+        cursor.execute(sql_actualizar, (nueva_contrasena, documento))
+        conexion.connection.commit()
+
+        return jsonify({'success': True, 'message': 'Contraseña actualizada correctamente'})
+    except Exception as ex:
+        conexion.connection.rollback()
+        return jsonify({'success': False, 'message': 'Error al actualizar contraseña'}), 500
+    
+#----------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+# Obtener estadísticas para el dashboard
+@app.route('/dashboard/estadisticas', methods=['GET'])
+def obtener_estadisticas_dashboard():
+    try:
+        cursor = conexion.connection.cursor()
+        
+        # 1. Total de ingresos (movimientos de entrada)
+        sql_ingresos = "SELECT COUNT(*) FROM movimiento WHERE tipoIngreso IS NOT NULL"
+        cursor.execute(sql_ingresos)
+        total_ingresos = cursor.fetchone()[0]
+        
+        # 2. Porcentaje de marcas de equipos
+        sql_marcas = """
+        SELECT marca, COUNT(*) as cantidad 
+        FROM equipos 
+        GROUP BY marca 
+        ORDER BY cantidad DESC
+        """
+        cursor.execute(sql_marcas)
+        marcas_data = cursor.fetchall()
+        total_equipos = sum([marca[1] for marca in marcas_data])
+        porcentaje_marcas = [{'marca': marca[0], 'porcentaje': (marca[1]/total_equipos)*100} for marca in marcas_data]
+        
+        # 3. Porcentaje de ingresos por tipo
+        sql_tipos_ingreso = """
+        SELECT tipoIngreso, COUNT(*) as cantidad 
+        FROM movimiento 
+        WHERE tipoIngreso IS NOT NULL
+        GROUP BY tipoIngreso
+        """
+        cursor.execute(sql_tipos_ingreso)
+        tipos_ingreso_data = cursor.fetchall()
+        porcentaje_ingresos = [{'tipo': tipo[0], 'porcentaje': (tipo[1]/total_ingresos)*100} for tipo in tipos_ingreso_data]
+        
+        # 4. Datos históricos (ejemplo - debes adaptarlo a tu estructura real)
+        sql_historico = """
+        SELECT 
+            DATE_FORMAT(fechaIngreso, '%b') as mes, 
+            COUNT(*) as ingresos
+        FROM movimiento
+        WHERE fechaIngreso >= DATE_SUB(NOW(), INTERVAL 6 MONTH)
+        GROUP BY mes
+        ORDER BY fechaIngreso
+        """
+        cursor.execute(sql_historico)
+        historico_data = cursor.fetchall()
+        historico_ingresos = [{'mes': mes[0], 'ingresos': mes[1]} for mes in historico_data]
+        
+        return jsonify({
+            'total_ingresos': total_ingresos,
+            'porcentaje_marcas': porcentaje_marcas,
+            'porcentaje_ingresos': porcentaje_ingresos,
+            'historico_ingresos': historico_ingresos,
+            'mensaje': 'Datos del dashboard obtenidos'
+        })
+        
+    except Exception as ex:
+        return jsonify({'mensaje': 'Error al obtener datos del dashboard'}), 500
+    
+#----------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+@app.route('/send-verification', methods=['POST'])
+def send_verification():
+    try:
+        data = request.get_json()
+        email = data['email']
+
+        # Verificar si el usuario existe en la base de datos
+        cursor = conexion.connection.cursor()
+        sql = "SELECT documento FROM usuario WHERE correo = %s"
+        cursor.execute(sql, (email,))
+        user = cursor.fetchone()
+
+        if not user:
+            return jsonify({'success': False, 'message': 'Correo no registrado'}), 404
+
+        # Generar código de 6 dígitos
+        code = ''.join(random.choices(string.digits, k=6))
+        expiration = datetime.now() + timedelta(minutes=15)
+
+        # Guardar código en el diccionario
+        verification_codes[email] = {
+            'code': code,
+            'expiration': expiration,
+            'attempts': 0,
+            'user_data': {  # Almacenamos datos del usuario temporalmente
+                'documento': user[0]
+            }
+        }
+
+        # En desarrollo: Mostrar el código en consola
+        print(f"\n--- Código de verificación para {email} ---")
+        print(f"Código: {code}")
+        print(f"Expira: {expiration.strftime('%Y-%m-%d %H:%M:%S')}")
+        print("----------------------------------------\n")
+
+        return jsonify({
+            'success': True,
+            'message': 'Código generado (ver consola del servidor)',
+            'code': code,  # Solo para desarrollo, quitar en producción
+            'email': email
+        })
+
+    except Exception as ex:
+        return jsonify({'success': False, 'message': str(ex)}), 500
+
+@app.route('/verify-code', methods=['POST'])
+def verify_code():
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'message': 'Datos no proporcionados'}), 400
+            
+        email = data.get('email')
+        code = data.get('code')
+        
+        if not email or not code:
+            return jsonify({'success': False, 'message': 'Email y código requeridos'}), 400
+
+        # Verificar si hay un código para este email
+        if email not in verification_codes:
+            return jsonify({'success': False, 'message': 'Código no encontrado o expirado'}), 404
+
+        stored_code = verification_codes[email]
+
+        # Verificar intentos (máximo 3)
+        if stored_code['attempts'] >= 3:
+            del verification_codes[email]
+            return jsonify({'success': False, 'message': 'Demasiados intentos fallidos'}), 403
+
+        # Verificar expiración
+        if datetime.now() > stored_code['expiration']:
+            del verification_codes[email]
+            return jsonify({'success': False, 'message': 'Código expirado'}), 410
+
+        # Verificar código
+        if code == stored_code['code']:
+            # Código correcto - obtener datos completos del usuario
+            cursor = conexion.connection.cursor()
+            sql = """SELECT documento, nombre, apellido, rol 
+                     FROM usuario WHERE correo = %s"""
+            cursor.execute(sql, (email,))
+            user_data = cursor.fetchone()
+            
+            user = {
+                'documento': user_data[0],
+                'nombre': user_data[1],
+                'apellido': user_data[2],
+                'rol': user_data[3]
+            }
+            
+            # Eliminar código verificado
+            del verification_codes[email]
+            
+            return jsonify({
+            'success': True,
+            'message': 'Verificación exitosa',
+            'user': {
+                'documento': user_data[0],
+                'nombre': user_data[1],
+                'apellido': user_data[2],
+                'rol': user_data[3]
+            }
+        })
+        else:
+            # Código incorrecto - incrementar intentos
+            verification_codes[email]['attempts'] += 1
+            remaining_attempts = 3 - verification_codes[email]['attempts']
+            return jsonify({
+                'success': False,
+                'message': f'Código incorrecto. Te quedan {remaining_attempts} intentos.'
+            }), 401
+
+    except Exception as ex:
+        return jsonify({'success': False, 'message': str(ex)}), 500
+
+@app.route('/resend-code', methods=['POST'])
+def resend_code():
+    try:
+        data = request.get_json()
+        email = data['email']
+
+        # Verificar si el usuario existe
+        cursor = conexion.connection.cursor()
+        sql = "SELECT documento FROM usuario WHERE correo = %s"
+        cursor.execute(sql, (email,))
+        user = cursor.fetchone()
+
+        if not user:
+            return jsonify({'success': False, 'message': 'Correo no registrado'}), 404
+
+        # Generar nuevo código
+        new_code = ''.join(random.choices(string.digits, k=6))
+        expiration = datetime.now() + timedelta(minutes=15)
+
+        # Actualizar o crear nueva entrada
+        verification_codes[email] = {
+            'code': new_code,
+            'expiration': expiration,
+            'attempts': 0,
+            'user_data': {
+                'documento': user[0]
+            }
+        }
+
+        # En desarrollo: Mostrar el nuevo código en consola
+        print(f"\n--- Nuevo código de verificación para {email} ---")
+        print(f"Código: {new_code}")
+        print(f"Expira: {expiration.strftime('%Y-%m-%d %H:%M:%S')}")
+        print("----------------------------------------\n")
+
+        return jsonify({
+            'success': True,
+            'message': 'Nuevo código generado (ver consola del servidor)',
+            'code': new_code  # Solo para desarrollo, quitar en producción
+        })
+
+    except Exception as ex:
+        return jsonify({'success': False, 'message': str(ex)}), 500
     
 def pagina_no_encontrada(error):
     return "<h1>La pagina que intentas buscar no existe</h1>", 404
